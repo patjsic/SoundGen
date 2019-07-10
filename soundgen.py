@@ -1,24 +1,31 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[2]:
+# In[1]:
 
 
 import numpy as np
 import scipy
+import random
+import scipy.io.wavfile
 import IPython as ip
 import matplotlib.pyplot as plt
 import wave
 from sympy.utilities.iterables import multiset_permutations
+import struct
 
 
-# In[3]:
+# In[9]:
 
 
 #Sample rate and duration of the sound
 rate = 96000
 duration = 0.5
 t = np.linspace(0, duration, int(rate * duration))
+np.set_printoptions(threshold=np.inf)
+
+#Random Seed
+seed = 10
 
 def norm(v):
     return 2 * (v - np.mean(v)) / np.ptp(v)
@@ -35,14 +42,13 @@ class ToneBlock:
     
     #Generates a single tone with a silence after
     def generate_tone(self, freq):
-        tone = np.sin(freq * 2.0 * np.pi * np.linspace(0,duration,int(rate * self.dur)))
-        ramplen = int(0.005 * rate)
-        window = np.ones(int(self.dur * rate))
-        hann = np.hanning(2 * rate)
+        tone = np.sin(freq * 2.0 * np.pi * np.linspace(0,self.dur,int(rate * self.dur)),dtype=np.float32)
+        ramplen = int(0.01 * rate)
+        window = np.ones(int(self.dur * rate), dtype=np.float32)
+        hann = np.hanning(2 * ramplen).astype(np.float32)
         window[:ramplen] = hann[:ramplen]
         window[-ramplen:] = hann[-ramplen:]
-        #print(window*tone)
-        return np.concatenate([window * tone, np.zeros(int(rate*self.sil))])
+        return np.concatenate([window * tone, np.zeros(int(rate*self.sil), dtype=np.float32)])
     
     #Takes in boolean array of order of frequencies and returns a harmonic stack, 
     #e.g. [0, 1, 1] returns stack of 3 tones with missing fundamental frequency.
@@ -53,7 +59,6 @@ class ToneBlock:
             if i:
                 block[count] = self.freq * (count + 1)
             count += 1
-        #print(block)
         return block
     
 
@@ -62,12 +67,8 @@ class ToneBlock:
     def generate_toneblock(self, boolarr):
         sum_series = np.zeros(len(boolarr), dtype = object)
         blok = self.generate_block(boolarr)
-        #print(blok)
-        count = 0
-        for x in blok:
-            sum_series[count] = self.generate_tone(x)
-            count += 1
-        return norm(np.sum(sum_series))
+        freqs = [self.freq * (i+1) for i, present in enumerate(boolarr) if present]
+        return sum(self.generate_tone(freq) for freq in freqs) / len(freqs)
 
     #Creating random array of boolean arrays of desired length (currently configured to ignore missing midtones)       
     def bool_gen(self):
@@ -80,107 +81,101 @@ class ToneBlock:
                 big_bool += [p]
         return big_bool
 
-#Save the wav file with a 500 Hz left channel mark-track
-def save_wav(filename, audio, stereo_on = True):
-    nchannels = 1
-    sampwidth = 2
-    comptype = 'NONE'
-    compname = 'not compressed'
+def save_wav(filename_mark,filename_audio, audio):
+    mark = np.zeros(len(audio))
+    mark[np.nonzero(audio)] = 1
+    plt.figure()
+    plt.plot(mark)
+    scipy.io.wavfile.write(filename_audio, rate, audio)
+    scipy.io.wavfile.write(filename_mark,rate,mark)
     
-    if stereo_on:
-        nchannels = 2
-    
-    
-    with wave.open(filename, 'w') as wav_file:
-        wav_file.set_params((nchannels, sampwidth, fs, len(audio), comptype, compname))
+def save_wavstereo(filename, audio):
+    mark = np.zeros(len(audio))
+    mark[np.nonzero(audio)] = 1
+    x = np.array([mark,audio])
+    plt.figure()
+    plt.plot(mark)
+    scipy.io.wavfile.write(filename, rate, x.T)
 
-        for i in range(int(duration * rate)):
-            
-            wav_file.writeframes(struct.pack('<hh', np.sin(500 * 2.0 * np.pi * np.linspace(0,duration,int(rate * 40))), audio))
-        
-        wav_file.writeframes('')
-        wav_file.close()
-        
-
-
-#import wave, struct, math
-
-#def save_wav(audio):
-#    sampleRate = 44100.0 # hertz
-#    duration = 1.0       # seconds
-
-#    lFreq =  523.25  # C
-
- #   wavef = wave.open('sound.wav','w')
- #   wavef.setnchannels(2) # stereo
- #   wavef.setsampwidth(2) 
-  #  wavef.setframerate(sampleRate)
-
-   # for i in range(int(duration * sampleRate)):
-   #     l = int(32767.0*math.cos(lFreq*math.pi*float(i)/float(sampleRate)))
-        #r = int(32767.0*math.cos(rFreq*math.pi*float(i)/float(sampleRate)))
-  #  r = audio
-  #  wavef.writeframesraw( struct.pack('<hh', l, r ) )
-
-#wavef.writeframes('')
-#wavef.close()
-
-
+#Splits array into blocks of 0.5s and shuffles them
+def randomizer(tonearray):
+    split = np.array(np.array_split(tonearray, 56))
+    np.random.shuffle(split)
+    x = np.concatenate(split)
+    return x
     
     
 #Call bool_gen to create all possible stacks (without missing midtones).
 #Then create a harmonic stack object for each fundamental frequency. 
 def main():
     j = 0
-    tone0 = ToneBlock(550, 5)
+    tone0 = ToneBlock(500, 5)
     tone1 = ToneBlock(1100, 5)
     tone2 = ToneBlock(2500, 5)
     tone3 = ToneBlock(7000, 5)
     tone = [tone0, tone1, tone2, tone3]
     
     pure_tone = []
-    boole = [[1,1,1,1,1],[1,1,1,1,0],[1,1,1,0,0],[1,1,0,0,0],[1,0,0,0,0],[0,0,0,0,1],[0,0,0,1,1],[0,0,1,1,1],[0,1,1,1,1]]
-    #boole = tone0.bool_gen() #Calling for just tone0 since nfreq = 5 for all tones
-    np.random.shuffle(boole)
+    boole = [
+        [1,1,1,1,1],
+        [1,1,1,1,0],
+        [1,1,1,0,0],
+        [1,1,0,0,0],
+        [0,0,0,1,1],
+        [0,0,1,1,1],
+        [0,1,1,1,1],
+        [0,0,1,1,0],
+        [0,1,1,0,0],
     
-    toneblock0 = [tone0.generate_toneblock(i) for i in boole]
-    toneblock1 = [tone1.generate_toneblock(i) for i in boole]
-    toneblock2 = [tone2.generate_toneblock(i) for i in boole]
-    toneblock3 = [tone3.generate_toneblock(i) for i in boole]
-    toneblock = [toneblock0, toneblock1, toneblock2, toneblock3]
-    #tonenorm = [norm(i) for i in toneblock]
+        #Pure Tones
+        [1,0,0,0,0],
+        [0,1,0,0,0],
+        [0,0,1,0,0],
+        [0,0,0,1,0],
+        [0,0,0,0,1],
+    ]
     
-    new_t = np.linspace(0, duration * len(toneblock0), int(rate * duration * len(toneblock0)))
-    tonecat = [np.concatenate(x) for x in toneblock]
-    for cat in tonecat:
+    #Generate harmonic stacks using boole
+    toneblock0 = np.array([[x,  tone0.freq, tone0.generate_toneblock(i)] for x,i in enumerate(boole)])
+    toneblock1 = np.array([[x,  tone1.freq, tone1.generate_toneblock(i)] for x,i in enumerate(boole)])
+    toneblock2 = np.array([[x,  tone2.freq, tone2.generate_toneblock(i)] for x,i in enumerate(boole)])
+    toneblock3 = np.array([[x, tone3.freq, tone3.generate_toneblock(i)]for x,i in enumerate(boole)])
+    
+    #Append toneblock values
+    tonecat = np.concatenate((toneblock0, toneblock1,toneblock2, toneblock3))
+    
+    new_t = np.linspace(0, duration * 14, int(rate * duration * 14))
+    full_tonecat = np.repeat(tonecat, 8, 0)
+
+    #plotcat = np.concatenate(tonecat)
+    np.random.shuffle(full_tonecat)
+    toneplot = [full_tonecat[i][2] for i in range(len(full_tonecat))]
+    
+#     for cat in tonecat:
         
-        plt.title('$f_{o}$ =' + str(tone[j].freq))
-        plt.plot(new_t, cat)
-        plt.axis([0.5, 0.51, -1, 1])
-        plt.figure()
-        j += 1
+#         plt.title('$f_{o}$ =' + str(tone[j].freq))
+#         plt.plot(new_t, cat)
+#         plt.axis([0.505, 0.51, -1, 1])
+#         plt.figure()
+#         j += 1
     
-    plt.plot(new_t, tonecat[0])
-    plt.plot(new_t, tonecat[1])
-    plt.title('$f_{o}$ = 550 Hz and $f_{o} = 1000 Hz$')
-    plt.axis([0.05, 0.055, -1, 1])
-    #save_wav('wave_test.wav',tonecat)
- #   return toneblock
-    
+    #Insert a second of silence at the start
+    toneplot = np.insert(toneplot, 0, np.zeros(rate))
+
+    #plt.plot(new_t, tonecat[0])
+    #plt.plot(new_t, tonecat[1]) #To show waves aren't out of phase
+    #plt.title('$f_{o}$ = 550 Hz and $f_{o} = 1000 Hz$')
+    #plt.axis([0.0, 0.6, -1, 1])
+    plt.figure()
+    plt.plot(toneplot)
+    toneparam = [[full_tonecat[i][0],full_tonecat[i][1]] for i in range(len(full_tonecat))]
+    #save_wav('mark96k.wav','test96k.wav',toneplot)
+    save_wavstereo('test96k2', toneplot)
+    f = open("params96k2.txt","w+")
+    f.write("seed : %s" %seed  + "\n tone array with corresponding frequency: %s" %toneparam)
+    f.close
     
 main()
-
-
-
-# In[ ]:
-
-
-
-
-
-# In[ ]:
-
-
 
 
 
